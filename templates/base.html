@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}SFLogs{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="{{ url_for('index') }}">SF<span>Logs</span></a>
+    <nav><a href="{{ url_for('index') }}">نمای کلی</a><a href="{{ url_for('logs') }}">گزارش کار</a><a href="{{ url_for('incidents') }}">اینسیدنت‌ها</a></nav>
+  </header>
+  <main class="container">{% block content %}{% endblock %}</main>
+  <footer>دفتر عملیات شخصی · SFLogs</footer>
+</body>
+</html>

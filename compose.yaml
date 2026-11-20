@@ -1,0 +1,15 @@
+services:
+  sflogs:
+    build: .
+    container_name: sflogs
+    ports:
+      - "5000:5000"
+    environment:
+      SFLOGS_DATABASE: /app/data/sflogs.sqlite3
+      SFLOGS_SECRET_KEY: ${SFLOGS_SECRET_KEY:-local-development-key}
+    volumes:
+      - sflogs_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  sflogs_data:

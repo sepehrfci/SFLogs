@@ -1,0 +1,9 @@
+{% extends 'base.html' %}{% block title %}گزارش کار · SFLogs{% endblock %}{% block content %}
+<div class="page-title"><div><p class="eyebrow">WORK JOURNAL</p><h1>گزارش کار</h1></div></div>
+<section class="panel"><h2>ثبت کار جدید</h2><form method="post" class="form-grid">
+<label>عنوان کار *<input name="title" required placeholder="مثلاً بررسی خطای deployment"></label>
+<label>دسته‌بندی<select name="category"><option>Operations</option><option>CI/CD</option><option>Kubernetes</option><option>Monitoring</option><option>Security</option><option>Automation</option><option>Backup & DR</option><option>Learning</option><option>Other</option></select></label>
+<label>سرویس<input name="service" placeholder="مثلاً payments-api"></label><label>محیط<input name="environment" placeholder="production / staging"></label>
+<label>تاریخ<input type="date" name="work_date" value="{{ today }}"></label><label>مدت (دقیقه)<input type="number" min="0" name="duration_minutes" placeholder="45"></label>
+<label class="wide">جزئیات و نتیجه<textarea name="details" rows="3" placeholder="چه کاری انجام شد و نتیجه چه بود؟"></textarea></label><div class="wide"><button class="button">ذخیره گزارش</button></div></form></section>
+<section class="panel"><h2>همه گزارش‌ها</h2>{% for log in logs %}<article class="log-card"><div class="section-head"><b>{{ log.title }}</b><time>{{ log.work_date }}{% if log.duration_minutes %} · {{ log.duration_minutes }} دقیقه{% endif %}</time></div><p class="muted">{{ log.category }}{% if log.service %} · {{ log.service }}{% endif %}{% if log.environment %} · {{ log.environment }}{% endif %}</p>{% if log.details %}<p class="details">{{ log.details }}</p>{% endif %}</article>{% else %}<p class="empty">گزارشی برای نمایش وجود ندارد.</p>{% endfor %}</section>{% endblock %}
