@@ -7,10 +7,14 @@ import io
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from flask import Flask, Response, abort, g, redirect, render_template, request, session, url_for
+from dotenv import load_dotenv
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, url_for
 
 
 BASE_DIR = Path(__file__).resolve().parent
+# Load local development settings from the project .env when present. Existing
+# process environment variables take precedence over values in the file.
+load_dotenv(BASE_DIR / ".env")
 DATABASE = Path(os.environ.get("SFLOGS_DATABASE", BASE_DIR / "data" / "sflogs.sqlite3"))
 TASK_STATUSES = ("Backlog", "Ready", "In Progress", "Blocked", "Review", "Done")
 TASK_PRIORITIES = ("Low", "Medium", "High", "Urgent")
@@ -173,8 +177,29 @@ def index():
         "minutes": db.execute("SELECT coalesce(sum(duration_minutes), 0) FROM work_logs").fetchone()[0],
         "open_tasks": db.execute("SELECT count(*) FROM tasks WHERE status != 'Done'").fetchone()[0],
     }
-    tasks = db.execute("SELECT * FROM tasks WHERE status != 'Done' ORDER BY CASE priority WHEN 'Urgent' THEN 0 WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, due_date LIMIT 5").fetchall()
-    return render_template("index.html", logs=logs, incidents=incidents, tasks=tasks, counts=counts)
+    tasks = db.execute(
+        """SELECT * FROM tasks
+           ORDER BY CASE status WHEN 'Backlog' THEN 0 WHEN 'Ready' THEN 1
+             WHEN 'In Progress' THEN 2 WHEN 'Blocked' THEN 3 WHEN 'Review' THEN 4 ELSE 5 END,
+             CASE priority WHEN 'Urgent' THEN 0 WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END,
+             due_date, id"""
+    ).fetchall()
+    status_descriptions = {
+        "Backlog": "ایده‌ها و کارهایی که هنوز برای شروع آماده نشده‌اند.",
+        "Ready": "کارهای اولویت‌دار و آماده‌ی شروع.",
+        "In Progress": "کارهایی که اکنون روی آن‌ها وقت می‌گذاری.",
+        "Blocked": "مواردی که منتظر وابستگی یا تصمیم هستند.",
+        "Review": "در انتظار بازبینی، تست یا تأیید نهایی.",
+        "Done": "تکمیل‌شده‌ها؛ برای مرور روند کار نگه داشته شده‌اند.",
+    }
+    status_labels = {
+        "Backlog": "بک‌لاگ", "Ready": "آماده", "In Progress": "در حال انجام",
+        "Blocked": "مسدود", "Review": "بازبینی", "Done": "تکمیل‌شده",
+    }
+    return render_template("index.html", logs=logs, incidents=incidents, tasks=tasks, counts=counts,
+                           statuses=TASK_STATUSES, status_descriptions=status_descriptions,
+                           status_labels=status_labels,
+                           today=date.today().isoformat())
 
 
 def report_filters(args):
@@ -350,6 +375,8 @@ def update_task(task_id):
         abort(400, "وضعیت نامعتبر است")
     db.execute("UPDATE tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (status, task_id))
     db.commit()
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify({"id": task_id, "status": status})
     return redirect(url_for("tasks"))
 
 

@@ -36,3 +36,74 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_SSH_KEY" || { echo "Missing DEPLOY_SSH_KEY secret"; exit 1; }
+          test -n "$DEPLOY_KNOWN_HOSTS" || { echo "Missing DEPLOY_KNOWN_HOSTS secret"; exit 1; }
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/sflogs_deploy"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/sflogs_deploy" "$HOME/.ssh/known_hosts"
+      - name: Deploy published image
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          test -n "$DEPLOY_HOST" || { echo "Missing DEPLOY_HOST secret"; exit 1; }
+          test -n "$DEPLOY_USER" || { echo "Missing DEPLOY_USER secret"; exit 1; }
+          test -n "$DEPLOY_PATH" || { echo "Missing DEPLOY_PATH secret"; exit 1; }
+          DEPLOY_PORT="${DEPLOY_PORT:-22}"
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]] && (( DEPLOY_PORT >= 1 && DEPLOY_PORT <= 65535 )) || { echo "DEPLOY_PORT must be a port from 1 to 65535"; exit 1; }
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_REF_NAME}"
+          SSH_ARGS="-p $DEPLOY_PORT -i $HOME/.ssh/sflogs_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          SCP_ARGS="-P $DEPLOY_PORT -i $HOME/.ssh/sflogs_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          scp $SCP_ARGS compose.yaml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/compose.yaml"
+          REMOTE_ARGS="$(printf '%q ' "$IMAGE" "$DEPLOY_PATH")"
+          ssh $SSH_ARGS "$DEPLOY_USER@$DEPLOY_HOST" "bash -s -- $REMOTE_ARGS" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          image="$1"
+          deploy_path="$2"
+          cd "$deploy_path"
+          old_image="$(docker inspect --format '{{.Config.Image}}' sflogs 2>/dev/null || true)"
+          export SFLOGS_IMAGE="${image%:*}"
+          export SFLOGS_IMAGE_TAG="${image##*:}"
+          docker compose pull sflogs
+          if ! docker compose up -d --no-build --force-recreate sflogs; then
+            echo "Deployment failed; attempting to restore the previous image"
+            if [ -n "$old_image" ]; then
+              export SFLOGS_IMAGE="${old_image%:*}"
+              export SFLOGS_IMAGE_TAG="${old_image##*:}"
+              docker compose up -d --no-build --force-recreate sflogs || true
+            fi
+            exit 1
+          fi
+          healthy=false
+          for attempt in $(seq 1 18); do
+            state="$(docker inspect --format '{{.State.Health.Status}}' sflogs 2>/dev/null || true)"
+            if [ "$state" = "healthy" ]; then healthy=true; break; fi
+            if [ "$state" = "unhealthy" ]; then break; fi
+            sleep 5
+          done
+          if [ "$healthy" != true ]; then
+            docker compose logs --tail=80 sflogs || true
+            echo "New container did not become healthy; attempting rollback"
+            if [ -n "$old_image" ]; then
+              export SFLOGS_IMAGE="${old_image%:*}"
+              export SFLOGS_IMAGE_TAG="${old_image##*:}"
+              docker compose up -d --no-build --force-recreate sflogs || true
+            fi
+            exit 1
+          fi
+          echo "Deployment is healthy: $image"
+          REMOTE_SCRIPT
