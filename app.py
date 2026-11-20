@@ -8,6 +8,8 @@ from flask import Flask, abort, g, redirect, render_template, request, url_for
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE = Path(os.environ.get("SFLOGS_DATABASE", BASE_DIR / "data" / "sflogs.sqlite3"))
+TASK_STATUSES = ("Backlog", "Ready", "In Progress", "Blocked", "Review", "Done")
+TASK_PRIORITIES = ("Low", "Medium", "High", "Urgent")
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SFLOGS_SECRET_KEY", "development-only-change-me")
@@ -58,6 +60,20 @@ def init_db():
             follow_up TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            details TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'Backlog',
+            priority TEXT NOT NULL DEFAULT 'Medium',
+            due_date TEXT,
+            category TEXT NOT NULL DEFAULT 'Operations',
+            service TEXT NOT NULL DEFAULT '',
+            environment TEXT NOT NULL DEFAULT '',
+            incident_id INTEGER REFERENCES incidents(id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         """
     )
     get_db().commit()
@@ -77,8 +93,67 @@ def index():
         "logs": db.execute("SELECT count(*) FROM work_logs").fetchone()[0],
         "open_incidents": db.execute("SELECT count(*) FROM incidents WHERE status != 'Resolved'").fetchone()[0],
         "minutes": db.execute("SELECT coalesce(sum(duration_minutes), 0) FROM work_logs").fetchone()[0],
+        "open_tasks": db.execute("SELECT count(*) FROM tasks WHERE status != 'Done'").fetchone()[0],
     }
-    return render_template("index.html", logs=logs, incidents=incidents, counts=counts)
+    tasks = db.execute("SELECT * FROM tasks WHERE status != 'Done' ORDER BY CASE priority WHEN 'Urgent' THEN 0 WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, due_date LIMIT 5").fetchall()
+    return render_template("index.html", logs=logs, incidents=incidents, tasks=tasks, counts=counts)
+
+
+@app.route("/tasks", methods=["GET", "POST"])
+def tasks():
+    db = get_db()
+    if request.method == "POST":
+        title = request.form.get("title", "").strip()
+        if not title:
+            abort(400, "عنوان کار الزامی است")
+        status = request.form.get("status", "Backlog")
+        priority = request.form.get("priority", "Medium")
+        if status not in TASK_STATUSES or priority not in TASK_PRIORITIES:
+            abort(400, "وضعیت یا اولویت نامعتبر است")
+        incident_id = request.form.get("incident_id", "").strip() or None
+        if incident_id:
+            exists = db.execute("SELECT 1 FROM incidents WHERE id = ?", (incident_id,)).fetchone()
+            if exists is None:
+                abort(400, "اینسیدنت انتخاب‌شده وجود ندارد")
+        db.execute(
+            """INSERT INTO tasks (title, details, status, priority, due_date, category,
+               service, environment, incident_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (title, request.form.get("details", "").strip(), status, priority,
+             request.form.get("due_date", "").strip() or None,
+             request.form.get("category", "Operations"), request.form.get("service", "").strip(),
+             request.form.get("environment", "").strip(), incident_id),
+        )
+        db.commit()
+        return redirect(url_for("tasks"))
+    all_incidents = db.execute("SELECT id, title FROM incidents ORDER BY started_at DESC").fetchall()
+    cards = db.execute("SELECT * FROM tasks ORDER BY CASE priority WHEN 'Urgent' THEN 0 WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, due_date, id").fetchall()
+    prefill_incident = request.args.get("incident_id", "")
+    incident = None
+    prefill_title = request.args.get("title", "")
+    if prefill_incident:
+        incident = db.execute("SELECT id, title, follow_up, service, environment FROM incidents WHERE id = ?", (prefill_incident,)).fetchone()
+        if incident and not prefill_title:
+            prefill_title = incident["follow_up"] or f"پیگیری اینسیدنت: {incident['title']}"
+    return render_template("tasks.html", tasks=cards, incidents=all_incidents,
+                           statuses=TASK_STATUSES, priorities=TASK_PRIORITIES,
+                           prefill_incident=prefill_incident if incident else "",
+                           prefill_title=prefill_title,
+                           prefill_service=incident["service"] if incident else "",
+                           prefill_environment=incident["environment"] if incident else "")
+
+
+@app.post("/tasks/<int:task_id>/update")
+def update_task(task_id):
+    db = get_db()
+    task = db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if task is None:
+        abort(404)
+    status = request.form.get("status", "")
+    if status not in TASK_STATUSES:
+        abort(400, "وضعیت نامعتبر است")
+    db.execute("UPDATE tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (status, task_id))
+    db.commit()
+    return redirect(url_for("tasks"))
 
 
 @app.route("/logs", methods=["GET", "POST"])
