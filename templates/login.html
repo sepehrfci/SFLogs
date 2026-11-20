@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ورود · SFLogs</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"></head>
+<body><main class="login-wrap"><section class="panel login-panel"><a class="brand" href="/">SF<span>Logs</span></a>
+{% if setup_required %}<h1>تنظیم دسترسی لازم است</h1><p>برای فعال شدن برنامه، مقدارهای SFLOGS_SECRET_KEY، SFLOGS_USERNAME و SFLOGS_PASSWORD را در فایل .env تنظیم کن. گذرواژه باید حداقل ۱۲ نویسه و کلید نشست حداقل ۳۲ نویسه داشته باشد؛ سپس سرویس را دوباره اجرا کن.</p>
+{% else %}<h1>ورود به SFLogs</h1>{% if error %}<p class="login-error">{{ error }}</p>{% endif %}<form method="post" class="form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label class="wide">نام کاربری<input name="username" autocomplete="username" required autofocus></label><label class="wide">گذرواژه<input name="password" type="password" autocomplete="current-password" required></label><div class="wide"><button class="button">ورود</button></div></form>{% endif %}</section></main></body></html>

@@ -1,6 +1,6 @@
 {% extends 'base.html' %}{% block title %}گزارش کار · SFLogs{% endblock %}{% block content %}
 <div class="page-title"><div><p class="eyebrow">WORK JOURNAL</p><h1>گزارش کار</h1></div></div>
-<section class="panel"><h2>ثبت کار جدید</h2><form method="post" class="form-grid">
+<section class="panel"><h2>ثبت کار جدید</h2><form method="post" class="form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <label>عنوان کار *<input name="title" required placeholder="مثلاً بررسی خطای deployment"></label>
 <label>دسته‌بندی<select name="category"><option>Operations</option><option>CI/CD</option><option>Kubernetes</option><option>Monitoring</option><option>Security</option><option>Automation</option><option>Backup & DR</option><option>Learning</option><option>Other</option></select></label>
 <label>سرویس<input name="service" placeholder="مثلاً payments-api"></label><label>محیط<input name="environment" placeholder="production / staging"></label>

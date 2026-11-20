@@ -15,6 +15,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Check Python syntax
-        run: python -m compileall -q app.py
+        run: python -m compileall -q app.py backup.py
       - name: Build Docker image
         run: docker build -t sflogs:${{ github.sha }} .

@@ -7,7 +7,7 @@
 </head>
 <body>
   <header class="topbar"><a class="brand" href="{{ url_for('index') }}">SF<span>Logs</span></a>
-    <nav><a href="{{ url_for('index') }}">نمای کلی</a><a href="{{ url_for('logs') }}">گزارش کار</a><a href="{{ url_for('incidents') }}">اینسیدنت‌ها</a><a href="{{ url_for('tasks') }}">برد کارها</a></nav>
+    <nav><a href="{{ url_for('index') }}">نمای کلی</a><a href="{{ url_for('logs') }}">گزارش کار</a><a href="{{ url_for('incidents') }}">اینسیدنت‌ها</a><a href="{{ url_for('tasks') }}">برد کارها</a><a href="{{ url_for('reports') }}">گزارش‌ها</a><form method="post" action="{{ url_for('logout') }}" class="logout-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>خروج</button></form></nav>
   </header>
   <main class="container">{% block content %}{% endblock %}</main>
   <footer>دفتر عملیات شخصی · SFLogs</footer>

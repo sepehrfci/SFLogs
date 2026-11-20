@@ -1,9 +1,13 @@
 import os
+import hmac
+import secrets
 import sqlite3
-from datetime import datetime
+import csv
+import io
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from flask import Flask, abort, g, redirect, render_template, request, url_for
+from flask import Flask, Response, abort, g, redirect, render_template, request, session, url_for
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -12,7 +16,13 @@ TASK_STATUSES = ("Backlog", "Ready", "In Progress", "Blocked", "Review", "Done")
 TASK_PRIORITIES = ("Low", "Medium", "High", "Urgent")
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.environ.get("SFLOGS_SECRET_KEY", "development-only-change-me")
+app.config.update(
+    SECRET_KEY=os.environ.get("SFLOGS_SECRET_KEY") or None,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("SFLOGS_COOKIE_SECURE", "false").lower() == "true",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+)
 
 
 def get_db():
@@ -84,6 +94,74 @@ def ensure_schema():
     init_db()
 
 
+def auth_is_configured():
+    return bool(
+        app.config["SECRET_KEY"] and len(app.config["SECRET_KEY"]) >= 32
+        and os.environ.get("SFLOGS_USERNAME")
+        and os.environ.get("SFLOGS_PASSWORD") and len(os.environ["SFLOGS_PASSWORD"]) >= 12
+    )
+
+
+@app.before_request
+def protect_app():
+    if request.endpoint in ("static", "healthz"):
+        return None
+    if not auth_is_configured():
+        if request.endpoint == "login":
+            return None
+        return render_template("login.html", setup_required=True, error=None), 503
+    if request.method == "POST":
+        submitted_token = request.form.get("csrf_token", "")
+        session_token = session.get("csrf_token", "")
+        if not submitted_token or not session_token or not hmac.compare_digest(submitted_token, session_token):
+            abort(400, "درخواست معتبر نیست؛ صفحه را تازه‌سازی و دوباره تلاش کن")
+    if request.endpoint == "login":
+        if session.get("authenticated"):
+            return redirect(url_for("index"))
+        return None
+    if not session.get("authenticated"):
+        return redirect(url_for("login"))
+
+
+@app.context_processor
+def inject_csrf_token():
+    def csrf_token():
+        token = session.get("csrf_token")
+        if not token:
+            token = secrets.token_urlsafe(32)
+            session["csrf_token"] = token
+        return token
+    return {"csrf_token": csrf_token}
+
+
+@app.get("/healthz")
+def healthz():
+    return "ok", 200
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not auth_is_configured():
+        return render_template("login.html", setup_required=True, error=None), 503
+    error = None
+    if request.method == "POST":
+        username_ok = hmac.compare_digest(request.form.get("username", ""), os.environ["SFLOGS_USERNAME"])
+        password_ok = hmac.compare_digest(request.form.get("password", ""), os.environ["SFLOGS_PASSWORD"])
+        if username_ok and password_ok:
+            session.clear()
+            session["authenticated"] = True
+            session.permanent = True
+            return redirect(url_for("index"))
+        error = "نام کاربری یا گذرواژه درست نیست."
+    return render_template("login.html", setup_required=False, error=error)
+
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 @app.get("/")
 def index():
     db = get_db()
@@ -97,6 +175,125 @@ def index():
     }
     tasks = db.execute("SELECT * FROM tasks WHERE status != 'Done' ORDER BY CASE priority WHEN 'Urgent' THEN 0 WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, due_date LIMIT 5").fetchall()
     return render_template("index.html", logs=logs, incidents=incidents, tasks=tasks, counts=counts)
+
+
+def report_filters(args):
+    today = date.today()
+    period = args.get("period", "week")
+    if period not in ("week", "month"):
+        period = "week"
+    default_from = today - timedelta(days=today.weekday()) if period == "week" else today.replace(day=1)
+    try:
+        date_from = date.fromisoformat(args.get("date_from") or default_from.isoformat())
+        date_to = date.fromisoformat(args.get("date_to") or today.isoformat())
+    except ValueError:
+        abort(400, "فرمت تاریخ معتبر نیست")
+    if date_from > date_to:
+        abort(400, "تاریخ شروع نباید بعد از تاریخ پایان باشد")
+    return {
+        "period": period,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "service": args.get("service", "").strip(),
+        "environment": args.get("environment", "").strip(),
+    }
+
+
+def filtered_records(db, filters):
+    log_conditions = ["work_date >= ?", "work_date <= ?"]
+    incident_conditions = ["substr(started_at, 1, 10) >= ?", "substr(started_at, 1, 10) <= ?"]
+    log_params = [filters["date_from"], filters["date_to"]]
+    incident_params = [filters["date_from"], filters["date_to"]]
+    for field in ("service", "environment"):
+        if filters[field]:
+            log_conditions.append(f"{field} = ?")
+            incident_conditions.append(f"{field} = ?")
+            log_params.append(filters[field])
+            incident_params.append(filters[field])
+    logs = db.execute(
+        f"SELECT * FROM work_logs WHERE {' AND '.join(log_conditions)} ORDER BY work_date DESC, id DESC",
+        log_params,
+    ).fetchall()
+    incidents = db.execute(
+        f"SELECT * FROM incidents WHERE {' AND '.join(incident_conditions)} ORDER BY started_at DESC, id DESC",
+        incident_params,
+    ).fetchall()
+    return logs, incidents
+
+
+@app.get("/reports")
+def reports():
+    db = get_db()
+    filters = report_filters(request.args)
+    logs, incidents = filtered_records(db, filters)
+    total_minutes = sum(log["duration_minutes"] or 0 for log in logs)
+    resolved_durations = []
+    resolution_times = []
+    for incident in incidents:
+        if incident["resolved_at"]:
+            try:
+                started = datetime.fromisoformat(incident["started_at"])
+                resolved = datetime.fromisoformat(incident["resolved_at"])
+                duration = (resolved - started).total_seconds() / 60
+                if duration >= 0:
+                    resolved_durations.append(duration)
+                    resolution_times.append((incident["title"], incident["started_at"][:10], round(duration)))
+            except ValueError:
+                continue
+    by_category = {}
+    for log in logs:
+        key = log["category"] or "بدون دسته‌بندی"
+        current = by_category.setdefault(key, {"count": 0, "minutes": 0})
+        current["count"] += 1
+        current["minutes"] += log["duration_minutes"] or 0
+    by_service = {}
+    for incident in incidents:
+        key = incident["service"] or "بدون سرویس"
+        by_service[key] = by_service.get(key, 0) + 1
+    daily_incidents = {}
+    for incident in incidents:
+        day = incident["started_at"][:10]
+        daily_incidents[day] = daily_incidents.get(day, 0) + 1
+    max_daily = max(daily_incidents.values(), default=1)
+    services = [row[0] for row in db.execute(
+        "SELECT service FROM (SELECT service FROM work_logs UNION SELECT service FROM incidents) "
+        "WHERE service != '' ORDER BY service"
+    ).fetchall()]
+    environments = [row[0] for row in db.execute(
+        "SELECT environment FROM (SELECT environment FROM work_logs UNION SELECT environment FROM incidents) "
+        "WHERE environment != '' ORDER BY environment"
+    ).fetchall()]
+    return render_template(
+        "reports.html", filters=filters, logs=logs, incidents=incidents,
+        total_minutes=total_minutes, avg_resolution=sum(resolved_durations) / len(resolved_durations) if resolved_durations else None,
+        resolved_count=len(resolved_durations), by_category=by_category, by_service=by_service,
+        daily_incidents=sorted(daily_incidents.items()), max_daily=max_daily,
+        resolution_times=resolution_times, max_resolution=max(resolved_durations, default=1),
+        services=services, environments=environments,
+    )
+
+
+@app.get("/reports/export.csv")
+def export_report():
+    filters = report_filters(request.args)
+    logs, incidents = filtered_records(get_db(), filters)
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["type", "date", "title", "category", "service", "environment", "duration_minutes", "status", "severity", "impact", "root_cause", "resolution", "follow_up"])
+    for log in logs:
+        writer.writerow(["work_log", log["work_date"], log["title"], log["category"], log["service"], log["environment"], log["duration_minutes"], "", "", "", "", "", ""])
+    for incident in incidents:
+        duration = ""
+        if incident["resolved_at"]:
+            try:
+                duration = round((datetime.fromisoformat(incident["resolved_at"]) - datetime.fromisoformat(incident["started_at"])).total_seconds() / 60)
+            except ValueError:
+                pass
+        writer.writerow(["incident", incident["started_at"], incident["title"], "", incident["service"], incident["environment"], duration, incident["status"], incident["severity"], incident["impact"], incident["root_cause"], incident["resolution"], incident["follow_up"]])
+    content = "\ufeff" + output.getvalue()
+    filename = f"sflogs-report-{filters['date_from']}-to-{filters['date_to']}.csv"
+    return Response(content, content_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
 @app.route("/tasks", methods=["GET", "POST"])

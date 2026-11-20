@@ -3,13 +3,30 @@ services:
     build: .
     container_name: sflogs
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
     environment:
       SFLOGS_DATABASE: /app/data/sflogs.sqlite3
-      SFLOGS_SECRET_KEY: ${SFLOGS_SECRET_KEY:-local-development-key}
+      SFLOGS_SECRET_KEY: ${SFLOGS_SECRET_KEY:-}
+      SFLOGS_USERNAME: ${SFLOGS_USERNAME:-}
+      SFLOGS_PASSWORD: ${SFLOGS_PASSWORD:-}
+      SFLOGS_COOKIE_SECURE: ${SFLOGS_COOKIE_SECURE:-false}
     volumes:
       - sflogs_data:/app/data
     restart: unless-stopped
 
+  backup:
+    build: .
+    environment:
+      SFLOGS_DATABASE: /app/data/sflogs.sqlite3
+      SFLOGS_BACKUP_DIR: /app/backups
+    volumes:
+      - sflogs_data:/app/data
+      - sflogs_backups:/app/backups
+    command: ["sh", "-c", "while [ ! -f /app/data/sflogs.sqlite3 ]; do sleep 5; done; while true; do python backup.py; sleep 86400; done"]
+    depends_on:
+      - sflogs
+    restart: unless-stopped
+
 volumes:
   sflogs_data:
+  sflogs_backups:
